@@ -175,46 +175,66 @@ function getFeedData(user, callback) {
   }
 
   /**
-   * Adds a new status update to the database.
-   */
-  function postStatusUpdate(user, location, contents, image) {
-    // If we were implementing this for real on an actual server, we would check
-    // that the user ID is correct & matches the authenticated user. But since
-    // we're mocking it, we can be less strict.
+ * Adds a new status update to the database.
+ * @param user ObjectID of the user.
+ */
+function postStatusUpdate(user, location, contents, image, callback) {
+  // Get the current UNIX time.
+  var time = new Date().getTime();
+  // The new status update. The database will assign the ID for us.
+  var newStatusUpdate = {
+    "likeCounter": [],
+    "type": "statusUpdate",
+    "contents": {
+      "author": user,
+      "postDate": time,
+      "location": location,
+      "contents": contents,
+      "image": image
+    },
+    // List of comments on the post
+    "comments": []
+  };
 
-    // Get the current UNIX time.
-    var time = new Date().getTime();
-    // The new status update. The database will assign the ID for us.
-    var newStatusUpdate = {
-      "likeCounter": [],
-      "type": "statusUpdate",
-      "contents": {
-        "author": user,
-        "postDate": time,
-        "location": location,
-        "contents": contents,
-        "image": image,
-        "likeCounter": []
-      },
-      // List of comments on the post
-      "comments": []
-    };
+  // Add the status update to the database.
+  db.collection('feedItems').insertOne(newStatusUpdate, function(err, result) {
+    if (err) {
+      return callback(err);
+    }
+    // Unlike the mock database, MongoDB does not return the newly added object
+    // with the _id set.
+    // Attach the new feed item's ID to the newStatusUpdate object. We will
+    // return this object to the client when we are done.
+    // (When performing an insert operation, result.insertedId contains the new
+    // document's ID.)
+    newStatusUpdate._id = result.insertedId;
 
-    // Add the status update to the database.
-    // Returns the status update w/ an ID assigned.
-    newStatusUpdate = addDocument('feedItems', newStatusUpdate);
-
-    // Add the status update reference to the front of the current user's feed.
-    var userData = readDocument('users', user);
-    var feedData = readDocument('feeds', userData.feed);
-    feedData.contents.unshift(newStatusUpdate._id);
-
-    // Update the feed object.
-    writeDocument('feeds', feedData);
-
-    // Return the newly-posted object.
-    return newStatusUpdate;
-  }
+    // Retrieve the author's user object.
+    db.collection('users').findOne({ _id: user }, function(err, userObject) {
+      if (err) {
+        return callback(err);
+      }
+      // Update the author's feed with the new status update's ID.
+      db.collection('feeds').updateOne({ _id: userObject.feed },
+        {
+          $push: {
+            contents: {
+              $each: [newStatusUpdate._id],
+              $position: 0
+            }
+          }
+        },
+        function(err) {
+          if (err) {
+            return callback(err);
+          }
+          // Return the new status update to the application.
+          callback(null, newStatusUpdate);
+        }
+      );
+    });
+  });
+}
 
   /**
    * Resolves a list of user objects. Returns an object that maps user IDs to
@@ -275,27 +295,34 @@ app.get('/user/:userid/feed', function(req, res) {
   }
 });
 
-  //`POST /feeditem { userId: user, location: location, contents: contents  }`
-  app.post('/feeditem', validate({ body: StatusUpdateSchema }), function(req, res) {
-    // If this function runs, `req.body` passed JSON validation!
-    var body = req.body;
-    var fromUser = getUserIdFromToken(req.get('Authorization'));
+//`POST /feeditem { userId: user, location: location, contents: contents  }`
+app.post('/feeditem', validate({ body: StatusUpdateSchema }), function(req, res) {
+// If this function runs, `req.body` passed JSON validation!
+var body = req.body;
+var fromUser = getUserIdFromToken(req.get('Authorization'));
 
-    // Check if requester is authorized to post this status update.
-    // (The requester must be the author of the update.)
-    if (fromUser === body.userId) {
-      var newUpdate = postStatusUpdate(body.userId, body.location, body.contents, body.image);
+// Check if requester is authorized to post this status update.
+// (The requester must be the author of the update.)
+if (fromUser === body.userId) {
+  postStatusUpdate(new ObjectID(fromUser), body.location, body.contents, body.image, function(err, newUpdate) {
+    if (err) {
+      // A database error happened.
+      // 500: Internal error.
+      res.status(500).send("A database error occurred: " + err);
+    } else {
       // When POST creates a new resource, we should tell the client about it
       // in the 'Location' header and use status code 201.
       res.status(201);
       res.set('Location', '/feeditem/' + newUpdate._id);
-       // Send the update!
+        // Send the update!
       res.send(newUpdate);
-    } else {
-      // 401: Unauthorized.
-      res.status(401).end();
     }
   });
+} else {
+  // 401: Unauthorized.
+  res.status(401).end();
+}
+});
 
   // `PUT /feeditem/feedItemId/likelist/userId` content
   app.put('/feeditem/:feeditemid/likelist/:userid', function(req, res) {
