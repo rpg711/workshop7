@@ -296,6 +296,8 @@ app.get('/user/:userid/feed', function(req, res) {
   }
 });
 
+
+
 //`POST /feeditem { userId: user, location: location, contents: contents  }`
 app.post('/feeditem', validate({ body: StatusUpdateSchema }), function(req, res) {
 // If this function runs, `req.body` passed JSON validation!
@@ -560,71 +562,169 @@ app.post('/search', function(req, res) {
   }
 });
 
-  // Post a comment
-  app.post('/feeditem/:feeditemid/comments', validate({ body: CommentSchema }), function(req, res) {
+function postComment(feedItemId, author, contents, postDate, callback){
+
+    db.collection('feedItems').updateOne({ _id: feedItemId },
+      { $push: {
+          'comments' : {
+            "author": author,
+            // The contents of the comment.
+            "contents": contents,
+            // The date the comment was posted.
+            // 01/24/16 22:00 EST
+            "postDate": postDate,
+            "likeCounter": []
+        }
+ }
+}, function(err, feedObject) {
+    if (err) {
+      return callback(err);
+    }
+    // Return the new status update to the application.
+    callback(null, feedObject);
+  }
+  );
+}
+
+
+// Post a comment
+app.post('/feeditem/:feeditemid/comments', validate({ body: CommentSchema }), function(req, res) {
     var fromUser = getUserIdFromToken(req.get('Authorization'));
     var comment = req.body;
     var author = req.body.author;
-    var feedItemId = req.params.feeditemid;
-    if (fromUser === author) {
-      var feedItem = readDocument('feedItems', feedItemId);
-      // Initialize likeCounter to empty.
-      comment.likeCounter = [];
-      // Push returns the new length of the array.
-      // The index of the new element is the length of the array minus 1.
-      // Example: [].push(1) returns 1, but the index of the new element is 0.
-      var index = feedItem.comments.push(comment) - 1;
-      writeDocument('feedItems', feedItem);
-      // 201: Created.
-      res.status(201);
-      res.set('Location', '/feeditem/' + feedItemId + "/comments/" + index);
-      // Return a resolved version of the feed item.
-      res.send(getFeedItemSync(feedItemId));
-    } else {
-      // Unauthorized.
-      res.status(401).end();
-    }
-  });
+    var feedItemId = new ObjectID(req.params.feeditemid);
+    var postDate = req.body.postDate
+    var contents = req.body.contents;
 
+    if (fromUser === author){
+    // Only update the feed item if the author matches the currently authenticated
+    // user.
+    postComment(feedItemId, new ObjectID(author), contents, postDate, function(err, feedObject) {
+      if (err) {
+        // A database error happened.
+        // 500: Internal error.
+        res.status(500).send("A database error occurred: " + err);
+      } else {
+        // When POST creates a new resource, we should tell the client about it
+        // in the 'Location' header and use status code 201.
+
+        res.status(201);
+          // Send the update!
+          // Update succeeded! Return the resolved feed item.
+          getFeedItem(feedItemId, function(err, feedItem) {
+            if (err) {
+              return sendDatabaseError(res, err);
+            }
+            res.set('Location', '/feeditem/' + feedItemId + "/comments/" + feedItem.comments.length - 1);
+            res.send(feedItem);
+          });
+      }
+    });
+  }
+  else {
+    // 401: Unauthorized.
+    res.status(401).end();
+  }
+});
+
+function likeComment(feedItemId, commentIndex, userId, callback){
+  var selector = {};
+  var operator = {};
+  selector['comments.' + commentIndex + '.likeCounter'] = userId; // {'comments.0.num_likes' : 1}
+  operator['$push'] = selector;  // {'$inc' : {'comments.0.num_likes' : 1} }
+
+  db.collection('feedItems').updateOne({ _id: feedItemId },
+      operator, function(err, feedObject) {
+    if (err) {
+      return callback(err);
+    }
+    // Return the new status update to the application.
+    callback(null, feedObject);
+  }
+  );
+}
+
+//like a comment
   app.put('/feeditem/:feeditemid/comments/:commentindex/likelist/:userid', function(req, res) {
     var fromUser = getUserIdFromToken(req.get('Authorization'));
-    var userId = parseInt(req.params.userid, 10);
-    var feedItemId = parseInt(req.params.feeditemid, 10);
+    var userId = req.params.userid
+    var feedItemId = new ObjectID(req.params.feeditemid, 10);
     var commentIdx = parseInt(req.params.commentindex, 10);
     // Only a user can mess with their own like.
     if (fromUser === userId) {
-      var feedItem = readDocument('feedItems', feedItemId);
-      var comment = feedItem.comments[commentIdx];
-      // Only change the likeCounter if the user isn't in it.
-      if (comment.likeCounter.indexOf(userId) === -1) {
-        comment.likeCounter.push(userId);
-      }
-      writeDocument('feedItems', feedItem);
-      comment.author = readDocument('users', comment.author);
-      // Send back the updated comment.
-      res.send(comment);
+
+      likeComment(feedItemId, commentIdx, new ObjectID(userId), function(err, feedObject) {
+        if (err) {
+          // A database error happened.
+          // 500: Internal error.
+          res.status(500).send("A database error occurred: " + err);
+        } else {
+          // When POST creates a new resource, we should tell the client about it
+          // in the 'Location' header and use status code 201.
+
+          res.status(201);
+            // Send the update!
+            // Update succeeded! Return the resolved feed item.
+            getFeedItem(feedItemId, function(err, feedItem) {
+              if (err) {
+                return sendDatabaseError(res, err);
+              }
+              res.send(feedItem.comments[commentIdx]);
+            });
+        }
+      });
     } else {
       // Unauthorized.
       res.status(401).end();
     }
   });
 
+  function unlikeComment(feedItemId, commentIndex, userId, callback){
+    var selector = {};
+    var operator = {};
+    selector['comments.' + commentIndex + '.likeCounter'] = userId; // {'comments.0.num_likes' : 1}
+    operator['$pull'] = selector;  // {'$inc' : {'comments.0.num_likes' : 1} }
+
+    db.collection('feedItems').updateOne({ _id: feedItemId },
+        operator, function(err, feedObject) {
+      if (err) {
+        return callback(err);
+      }
+      // Return the new status update to the application.
+      callback(null, feedObject);
+    }
+    );
+  }
+
+//unlike a comment
   app.delete('/feeditem/:feeditemid/comments/:commentindex/likelist/:userid', function(req, res) {
     var fromUser = getUserIdFromToken(req.get('Authorization'));
-    var userId = parseInt(req.params.userid, 10);
-    var feedItemId = parseInt(req.params.feeditemid, 10);
+    var userId = req.params.userid
+    var feedItemId = new ObjectID(req.params.feeditemid, 10);
     var commentIdx = parseInt(req.params.commentindex, 10);
     // Only a user can mess with their own like.
     if (fromUser === userId) {
-      var feedItem = readDocument('feedItems', feedItemId);
-      var comment = feedItem.comments[commentIdx];
-      var userIndex = comment.likeCounter.indexOf(userId);
-      if (userIndex !== -1) {
-        comment.likeCounter.splice(userIndex, 1);
-        writeDocument('feedItems', feedItem);
-      }
-      comment.author = readDocument('users', comment.author);
-      res.send(comment);
+
+      unlikeComment(feedItemId, commentIdx, new ObjectID(userId), function(err, feedObject) {
+        if (err) {
+          // A database error happened.
+          // 500: Internal error.
+          res.status(500).send("A database error occurred: " + err);
+        } else {
+          // When POST creates a new resource, we should tell the client about it
+          // in the 'Location' header and use status code 201.
+
+          res.status(201);
+            // Send the update!
+            // Update succeeded! Return the resolved feed item.
+            getFeedItem(feedItemId, function(err, feedItem) {
+              if (err) {
+                return sendDatabaseError(res, err);
+              }
+              res.send(feedItem.comments[commentIdx]);
+            });
+        }
+      });
     } else {
       // Unauthorized.
       res.status(401).end();

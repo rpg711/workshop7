@@ -1,21 +1,21 @@
 {
   "$schema": "http://json-schema.org/draft-04/schema#",
-  "id": "/",
   "type": "object",
   "properties": {
     "author": {
-      "id": "author",
-      "type": "integer"
+      "type": "string",
+      "id": "author"
     },
     "contents": {
-      "id": "contents",
-      "type": "string"
+      "type": "string",
+      "id": "contents"
     },
     "postDate": {
-      "id": "postDate",
-      "type": "integer"
+      "type": "integer",
+      "id": "postDate"
     }
   },
+  "id": "/",
   "required": [
     "author",
     "contents",
